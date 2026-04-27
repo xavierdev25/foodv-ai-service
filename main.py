@@ -32,8 +32,9 @@ app = FastAPI(
     description="Microservicio de recomendaciones con IA para FoodV",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if not API_SECRET_KEY else None,
+    docs_url="/docs",
     redoc_url=None,
+    openapi_tags=[{"name": "recommendations", "description": "Motor de recomendaciones con IA"}],
 )
 
 app.state.limiter = limiter
