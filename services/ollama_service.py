@@ -229,3 +229,17 @@ def get_recommendations(request: RecommendationRequest) -> RecommendationRespons
         user_id=request.user_id,
         recommendations=recommendations
     )
+
+def get_recommendations_with_fallback(request: RecommendationRequest) -> RecommendationResponse:
+    """Intenta Ollama primero, cae en Groq si falla."""
+    try:
+        logger.info("Intentando con Ollama...")
+        return get_recommendations(request)
+    except Exception as e:
+        logger.warning(f"Ollama falló ({e}), intentando con Groq...")
+        try:
+            from services.groq_service import get_recommendations_groq
+            return get_recommendations_groq(request)
+        except Exception as groq_error:
+            logger.error(f"Groq también falló: {groq_error}")
+            raise RuntimeError(f"Ambos proveedores de IA fallaron. Ollama: {e}. Groq: {groq_error}")
