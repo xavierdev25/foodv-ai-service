@@ -1,47 +1,81 @@
 # FoodV AI Service
 
-Microservicio de recomendaciones de comida para FoodV, desarrollado con FastAPI y el modelo de lenguaje phi3 via Ollama.
+Microservicio de recomendaciones gastronómicas para FoodV. Desarrollado con FastAPI, evalúa productos usando el modelo phi3 via Ollama con Groq como fallback, caché en Redis y autenticación por API key.
+
+[![Tests](https://img.shields.io/badge/tests-11%20passing-brightgreen)](tests/)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.136.1-teal)
 
 ## Stack Tecnológico
 
-| Tecnología | Versión |
-|---|---|
-| Python | 3.11 |
-| FastAPI | 0.136.1 |
-| Uvicorn | 0.46.0 |
-| Ollama SDK | 0.6.1 |
-| Pydantic | 2.13.3 |
-| Modelo LLM | phi3 (2.3 GB) |
+| Tecnología | Versión | Uso |
+|---|---|---|
+| Python | 3.11 | Lenguaje principal |
+| FastAPI | 0.136.1 | Framework web |
+| Uvicorn | 0.46.0 | Servidor ASGI |
+| Ollama SDK | 0.6.1 | Modelo phi3 local |
+| Groq SDK | 0.28.0 | Fallback LLM en la nube |
+| Redis | 5.0.1 | Caché de recomendaciones |
+| SlowAPI | 0.1.9 | Rate limiting |
+| Pydantic | 2.13.3 | Validación de datos |
 
 ## Arquitectura
 
 ```
 foodv-ai-service/
-├── main.py                  # Aplicación FastAPI + CORS + rutas
+├── main.py                  # FastAPI app + CORS + API key middleware + rate limiting
+├── config.py                # Variables de entorno
 ├── models/
-│   └── schemas.py           # Modelos Pydantic con validaciones
+│   └── schemas.py           # Modelos Pydantic
 ├── routers/
-│   └── recommendations.py   # Endpoints de recomendaciones
+│   └── recommendations.py   # Endpoints con caché y rate limiting
 ├── services/
-│   └── ollama_service.py    # Lógica de evaluación con phi3
+│   ├── ollama_service.py    # Evaluación con phi3 + extracción JSON robusta
+│   ├── groq_service.py      # Fallback con Groq/llama3-8b
+│   └── cache_service.py     # Caché Redis con TTL configurable
+├── tests/
+│   ├── test_prompt_builder.py
+│   ├── test_validate_recommendations.py
+│   └── test_cache_service.py
 ├── Dockerfile
+├── pytest.ini
 └── requirements.txt
+```
+
+## Flujo de Recomendaciones
+
+```
+Request → API Key validation → Rate limit (10/min)
+       → Cache hit? → Return cached
+       → Cache miss → Ollama (phi3)?
+                   → Success → Cache + Return
+                   → Fail    → Groq (llama3-8b)?
+                             → Success → Cache + Return
+                             → Fail    → 503 error
 ```
 
 ## Estrategia de Evaluación
 
-El microservicio evalúa cada producto individualmente en dos pasos:
+Cada producto se evalúa individualmente con phi3 en dos pasos:
 
-1. **Score** — phi3 asigna un puntaje de 0.0 a 1.0 según las restricciones y preferencias del estudiante. Si el producto viola una restricción dietética, el score es 0.0 y se descarta.
-2. **Reason** — phi3 genera una razón breve en español de máximo 4 palabras explicando la recomendación.
+1. **Score** — phi3 asigna un puntaje de `0.0` a `1.0`. Si el producto viola una restricción dietética el score es `0.0` y se descarta automáticamente.
+2. **Reason** — phi3 genera una razón de máximo 4 palabras en español.
 
-Los productos se ordenan por score de mayor a menor y se retornan los `max_recommendations` mejores.
+Los productos se ordenan por score y se retornan los `max_recommendations` mejores, con validación post-LLM para evitar alucinaciones.
+
+## Seguridad
+
+- **API Key** — header `X-API-Key` requerido en todos los endpoints (excepto `/health`)
+- **CORS** — orígenes restringidos vía `ALLOWED_ORIGINS`
+- **Rate Limiting** — 10 req/min por IP con SlowAPI
+- **Swagger** — activo en `/docs` (deshabilitar en producción via Nginx)
 
 ## Requisitos Previos
 
 - Python 3.11+
-- [Ollama](https://ollama.com/download) instalado y corriendo
+- [Ollama](https://ollama.com/download) instalado
 - Modelo phi3 descargado
+- Redis corriendo (opcional — caché se deshabilita si no está disponible)
 
 ```bash
 ollama pull phi3
@@ -50,45 +84,53 @@ ollama pull phi3
 ## Instalación
 
 ```bash
-# 1. Clonar el repositorio
 git clone https://github.com/TU_USUARIO/foodv-ai-service.git
 cd foodv-ai-service
 
-# 2. Crear entorno virtual
 python -m venv venv
+.\venv\Scripts\activate   # Windows
+source venv/bin/activate  # Linux/Mac
 
-# Windows
-.\venv\Scripts\activate
-
-# Linux/Mac
-source venv/bin/activate
-
-# 3. Instalar dependencias
 pip install -r requirements.txt
+cp .env.example .env
+# Edita .env con tus valores
+```
+
+### Variables de entorno (`.env`)
+
+```env
+OLLAMA_HOST=http://localhost:11434
+AI_SERVICE_PORT=8001
+ALLOWED_ORIGINS=http://localhost:8080
+API_SECRET_KEY=change-me-in-production
+GROQ_API_KEY=                          # Obtener en console.groq.com
+REDIS_URL=redis://localhost:6379
+AI_CACHE_TTL_SECONDS=300
 ```
 
 ## Ejecución
 
 ```bash
-# 1. Asegurarse que Ollama esté corriendo
+# Terminal 1 — Ollama
 ollama serve
 
-# 2. Arrancar el servicio (en otra terminal)
+# Terminal 2 — AI Service
+.\venv\Scripts\activate
 uvicorn main:app --reload --port 8001
 ```
 
-El servicio estará disponible en `http://localhost:8001`.
+| URL | Descripción |
+|---|---|
+| `http://localhost:8001/health` | Health check |
+| `http://localhost:8001/docs` | Swagger UI |
+| `http://localhost:8001/api/ai/recommendations` | Endpoint principal |
+| `http://localhost:8001/api/ai/health/ollama` | Estado de Ollama |
 
-## Endpoints
+## API
 
-| Método | Endpoint | Descripción |
-|---|---|---|
-| GET | `/health` | Health check del servicio |
-| GET | `/api/ai/health/ollama` | Verifica conexión con Ollama y modelo phi3 |
-| GET | `/api/ai/models` | Lista modelos disponibles en Ollama |
-| POST | `/api/ai/recommendations` | Genera recomendaciones personalizadas |
+### `POST /api/ai/recommendations`
 
-### POST `/api/ai/recommendations`
+**Headers:** `X-API-Key: tu-api-key`
 
 **Request:**
 
@@ -96,10 +138,11 @@ El servicio estará disponible en `http://localhost:8001`.
 {
   "user_id": 1,
   "restrictions": ["VEGETARIANO"],
-  "preferences": ["económico", "saludable"],
+  "preferences": ["económico", "almuerzo"],
   "available_products": [
-    {"id": 1, "nombre": "Ensalada fresca", "precio": 6.00, "categoria": "COMIDA"},
-    {"id": 2, "nombre": "Jugo de naranja", "precio": 4.00, "categoria": "BEBIDA"}
+    {"id": 1, "nombre": "Ensalada César", "precio": 8.50, "categoria": "COMIDA"},
+    {"id": 2, "nombre": "Lomo Saltado",   "precio": 14.00, "categoria": "COMIDA"},
+    {"id": 3, "nombre": "Jugo de naranja","precio": 4.00,  "categoria": "BEBIDA"}
   ],
   "max_recommendations": 3
 }
@@ -113,11 +156,19 @@ El servicio estará disponible en `http://localhost:8001`.
   "recommendations": [
     {
       "product_id": 1,
-      "nombre": "Ensalada fresca",
-      "precio": 6.0,
+      "nombre": "Ensalada César",
+      "precio": 8.50,
       "categoria": "COMIDA",
-      "score": 0.95,
+      "score": 0.92,
       "reason": "Saludable y económica"
+    },
+    {
+      "product_id": 3,
+      "nombre": "Jugo de naranja",
+      "precio": 4.00,
+      "categoria": "BEBIDA",
+      "score": 0.85,
+      "reason": "Complemento ideal almuerzo"
     }
   ],
   "generated_by": "phi3"
@@ -128,22 +179,39 @@ El servicio estará disponible en `http://localhost:8001`.
 
 | Valor | Descripción |
 |---|---|
-| `VEGETARIANO` | Excluye carnes |
-| `VEGANO` | Excluye todos los productos animales |
-| `SIN_GLUTEN` | Excluye productos con gluten |
-| `SIN_LACTOSA` | Excluye productos lácteos |
+| `VEGETARIANO` | Sin carnes |
+| `VEGANO` | Sin productos animales |
+| `SIN_GLUTEN` | Sin gluten |
+| `SIN_LACTOSA` | Sin lácteos |
 | `NINGUNA` | Sin restricciones |
+
+## Tests
+
+```bash
+.\venv\Scripts\activate
+pytest tests/ -v
+```
+
+**11 tests — 0 fallos:**
+
+| Suite | Tests | Descripción |
+|---|---|---|
+| `test_prompt_builder` | 5 | Construcción de prompts y extracción JSON |
+| `test_validate_recommendations` | 5 | Validación post-LLM y filtros |
+| `test_cache_service` | 4 | Caché Redis con mocks |
 
 ## Docker
 
 ```bash
-# Construir imagen
+# Solo el microservicio
 docker build -t foodv-ai-service .
+docker run -p 8001:8001 --env-file .env foodv-ai-service
 
-# Correr contenedor
-docker run -p 8001:8001 foodv-ai-service
+# Stack completo (desde el backend)
+cd ../backend
+docker-compose up -d
 ```
 
 ## Proyecto Relacionado
 
-- [foodv-backend](https://github.com/xavierdev25/foodv-backend) — Backend principal con Spring Boot
+[foodv-backend](https://github.com/xavierdev25/foodv-backend-main) — Backend principal con Spring Boot 4.x
